@@ -1,0 +1,52 @@
+---
+title: "Builder Journal"
+description: "The public essay shelf at labs.aurevonvc.com/articles/ — what it is, who it's for, and how operators run it."
+---
+
+The Builder Journal is Aurevon Labs' public essay shelf at [labs.aurevonvc.com/articles/](https://labs.aurevonvc.com/articles/). It's the first reader-facing surface on the Labs site: twelve opening articles, written in an operator voice, with SEO, GEO, and llms.txt entries so the shelf is crawlable and quotable.
+
+## Who it's for
+
+The journal is written for people building AI products in small teams. Each article assumes you ship, not pitch.
+
+- **Operators at small labs** who want field notes, not think-pieces.
+- **Founders evaluating tooling** who follow the receipts a lab publishes to decide whether to trust it.
+- **Search and LLM crawlers** — the shelf carries JSON-LD, a canonical URL per article, sitemap entries, and an `llms.txt` file so answers cite Aurevon Labs.
+
+## What lives on the shelf
+
+The index at `/articles/` lists every published article as a card with a hero visual, a kicker (topic tag), a title, and a one-line hook. Twelve articles shipped in the first batch, covering agent evaluation, prompt systems, lab strategy, platform ops, governance, product craft, architecture, execution, evaluation, go-to-market, systems thinking, and builder trust.
+
+## Article format
+
+Every article on the shelf follows the same shape so readers know what they're getting:
+
+- **Human operator voice.** First-person plural where useful, no marketing gloss, no em-dash-joined clauses.
+- **Kicker + lede.** A topic tag and a two-sentence hook before the body.
+- **Numbered field steps.** A short list of actions the reader can run this week.
+- **Long view.** A closing paragraph on where the trend goes over quarters, not days.
+- **Soft CTA.** One tasteful line pointing at a related [ForgeAi](https://getforgeai.aurevonvc.com/) kit or the free sampler — no popups, no gates.
+- **Three unique visuals per article.** A hero frame, a mid-article diagram, and a takeaway card, all served from the site's visual API so no article shares its images with another.
+
+Each article page also carries Article JSON-LD, canonical URL, Open Graph and Twitter cards, and a prev/next footer.
+
+## How to read it
+
+Start at the index and pick by kicker:
+
+```text
+https://labs.aurevonvc.com/articles/
+```
+
+The homepage nav on `labs.aurevonvc.com` links to the journal under **Journal**. The shelf and every article are also discoverable through `sitemap.xml` and `llms.txt` at the site root.
+
+## Operator references
+
+Two internal notes in the `aurevon-labs` repo explain how the shelf actually gets published and why it took a dedicated pipeline:
+
+- **`docs/articles/WHY-NOT-PUBLISHED.md`** — the root-cause note. Long-form articles never went live before because the Grok organic bots (R1, C2, A3) hard-stop at *Ready for Approval*, the `article-writer` agent only dry-ran into a `samples/` folder, `labs.aurevonvc.com` had no `/articles/` surface, and the Buffer X queue was full of short organics. Read this before you touch the pipeline.
+- **`forge-crew/agents/article-writer/batches/ART-*/buffer-publish-report.json`** — the per-batch publish report. Every article-writer run drops a batch folder here with one Markdown draft per article, a `manifest.json`, and a `buffer-publish-report.json` that records what was scheduled to Buffer, what was drafted for the cap, and what was demoted. Use this file to confirm a batch actually shipped instead of relying on the agent's exit code.
+
+## Ownership
+
+Long-form articles are owned by the `article-writer` agent in `forge-crew` only. It writes to the site and to Buffer peak slots, and never calls `shareNow`. Short organic posts stay with the Grok R1 → C2 → A3 draft-and-hold chain or the forge-crew orchestrator. Radar replies stay on the Buffer quote path.

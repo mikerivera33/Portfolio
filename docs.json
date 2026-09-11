@@ -16,6 +16,12 @@
           "index",
           "quickstart"
         ]
+      },
+      {
+        "group": "Content",
+        "pages": [
+          "content/builder-journal"
+        ]
       }
     ],
     "global": {
