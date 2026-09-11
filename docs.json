@@ -16,6 +16,12 @@
           "index",
           "quickstart"
         ]
+      },
+      {
+        "group": "Operations",
+        "pages": [
+          "operations/spend-cap-safe-mode"
+        ]
       }
     ],
     "global": {
