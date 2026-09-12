@@ -1,0 +1,145 @@
+---
+title: "Post visual endpoint and Buffer publish path"
+description: "How /api/post-visual serves images for Buffer, how forge-crew preflights media, and the operator runbook for HD landscape visuals."
+---
+
+`/api/post-visual` is the public image endpoint Buffer fetches when publishing to X, Instagram, and Facebook. Forge-crew mints the URLs, preflights them, and hands them to Buffer's GraphQL API. This page covers the endpoint contract, the default image format, the publish-path guard, and the smoke and status helpers operators run against production.
+
+## Endpoint contract
+
+`/api/post-visual` is served by the Labs site on Vercel. Base origin defaults to `https://labs.aurevonvc.com` and can be overridden by `POST_VISUAL_ORIGIN` or `LABS_SITE_ORIGIN`.
+
+### Methods
+
+| Method | Status | Notes |
+| --- | --- | --- |
+| `GET` | `200` | Returns the rendered PNG. |
+| `HEAD` | `200` | Same headers as `GET`, empty body. Buffer's media-URL probe requires this. |
+| `OPTIONS` | `204` | CORS preflight. Returns `Access-Control-Allow-Methods: GET, HEAD, OPTIONS`. |
+| Anything else | `405` | Returns `Allow: GET, HEAD, OPTIONS`. |
+
+Before the `HEAD` fix, Buffer's probe hit a `405` and posts failed with:
+
+> Please update the media URL to be publicly accessible before retrying the post.
+
+### Response headers
+
+Successful `GET` and `HEAD` responses set:
+
+- `Content-Type: image/png`
+- `Content-Length: <bytes>` (non-zero on `HEAD` — Buffer requires this)
+- `Cache-Control: public, max-age=31536000, immutable`
+- `Access-Control-Allow-Origin: *`
+- `Cross-Origin-Resource-Policy: cross-origin` (required so Buffer can consume the asset cross-origin)
+- `X-Forge-Visual-Id: <id>`
+- `X-Forge-Visual-Size: <width>x<height>` (`1920x1080` by default, `1080x1080` with `?ar=1`)
+
+### Query parameters
+
+| Param | Purpose | Default |
+| --- | --- | --- |
+| `id` | Post identifier. First 80 chars. | `ORG-unknown` |
+| `seed` | Layout seed (`hero`, `diagram`, etc.). First 32 chars. | `0` |
+| `h` | Claim hash (client-side dedupe). | none |
+| `t` | Claim text. First 120 chars. | `ForgeAi systems that ship` |
+| `v` | Cache-bust version. Current value is `2`. | none |
+| `ar` | Aspect ratio. `1`, `1x1`, or `square` → 1080×1080. Anything else → 1920×1080. | `16x9` |
+
+Output is deterministic for a given `(id, seed, t)` triple.
+
+## Image format
+
+The endpoint defaults to **1920×1080 landscape (16:9)** — true 1080p on the long edge, tuned for X's single-image educational post format:
+
+- Brand header with wordmark and `1080P HD / 16:9` tag
+- Claim headline sized from glyph advance so long claims wrap cleanly instead of truncating mid-word
+- `hero`, `stats`, `diagram`, and `detail` cards with the teal/slate brand palette
+- ASCII separators (the earlier middot glyph did not render)
+
+Minted URLs use `v=2` so browsers and CDNs cache-bust from the legacy `v=1` square. Pass `?ar=1` to opt back into the 1080×1080 square (useful when Instagram is the primary surface).
+
+## Publish-path media preflight
+
+Forge-crew refuses to queue a post whose media is not publicly reachable. Two guards run before `bufferSchedulePost`:
+
+**Public-host guard.** URLs are minted from a public https origin. These hosts are rejected:
+
+- `localhost`, `127.0.0.1`, `0.0.0.0`, `::1`, `*.localhost`
+- Private IPv4 ranges (`10/8`, `172.16/12`, `192.168/16`, `169.254/16`, `127/8`)
+- `*.vercel.app` (preview deployments)
+- `*.vercel-storage.com` and `blob.vercel-storage.com` (private blob hosts)
+- Anything not served over `https:`
+
+**HEAD preflight.** Every `bufferSchedulePost` call issues a `HEAD` against the minted media URL. If it does not return `200`, the post is not queued and the failure is logged in forge-crew instead of surfacing later as a Buffer error state.
+
+The preflight can be disabled for offline tests with `BUFFER_MEDIA_PREFLIGHT=0`. Leave it on in production.
+
+## Operator runbook
+
+The Buffer publish path is GraphQL-only while the X spend cap blocks OAuth writes. **Never `shareNow`** unless you are running an explicit emergency retry.
+
+Organic timer slots are DRAFT-and-HOLD by design (`BUFFER_QUEUED=0` is expected).
+
+### Smoke and status helpers
+
+Run these against production after any change to `/api/post-visual` or the preflight path.
+
+```bash
+# HEAD path: expect HEAD 200 + Content-Length, GET 200, POST 405
+node forge-crew/scripts/smoke-post-visual-head.mjs
+
+# Local render: 1080p PNGs with X-Forge-Visual-Size: 1920x1080 (and the square opt-in)
+node forge-crew/scripts/smoke-post-visual-hd.mjs
+
+# Public-host guard + HEAD refuse-on-non-200
+node forge-crew/tests/media-preflight.test.mjs
+
+# Read-only Buffer X snapshot (error / draft / scheduled)
+# Exits 2 if any errored posts remain.
+node --env-file=forge-crew/.env.local forge-crew/scripts/list-buffer-x-status.mjs
+```
+
+Manual prod check:
+
+```bash
+curl -sI -X HEAD 'https://labs.aurevonvc.com/api/post-visual?id=ART-20260910-01&seed=hero&h=b397de93&t=test&v=2'
+# Expect: 200, Content-Type image/png, Content-Length > 0,
+#         X-Forge-Visual-Size: 1920x1080, Cross-Origin-Resource-Policy: cross-origin
+```
+
+### Retrying posts that errored before the fix
+
+Buffer posts created before the HEAD fix landed on master stay in the errored state until an operator retries them in the UI:
+
+1. Open [Buffer Publish](https://publish.buffer.com/).
+2. Filter the AurevonLabs X channel to errored or failed.
+3. Retry each failed image post.
+4. Confirm scheduled posts stay scheduled — they publish automatically once HEAD works.
+5. Leave organic drafts as drafts (DRAFT-and-HOLD).
+
+### Replacing media on drafts and scheduled posts
+
+Buffer **cannot** replace media on a post that already sent. For sent posts, either leave them as-is or compose a follow-up with the new visual. Do not mass-`shareNow` drafts to force a re-send.
+
+For drafts or scheduled posts, either:
+
+- Edit the post in Buffer Publish and paste a new `/api/post-visual?...&v=2` URL, or
+- Re-queue via forge-crew so `ensureUniquePostImage` mints a fresh `v=2` URL.
+
+A one-shot helper is available for the drafts-and-scheduled case. It calls `editPost` only and never `shareNow`:
+
+```bash
+node --env-file=forge-crew/.env.local forge-crew/scripts/buffer-update-post-media.mjs \
+  --post-id <BUFFER_POST_ID> \
+  --image-url 'https://labs.aurevonvc.com/api/post-visual?id=...&v=2' \
+  --text 'existing caption text required by editPost'
+```
+
+Add `--dry-run` to inspect the payload without mutating Buffer. The helper runs the same `assertPublicMediaUrl` guard, so localhost, `*.vercel.app`, and private blob URLs are refused before the mutation is sent.
+
+### Source PRs
+
+- [aurevon-labs#69](https://github.com/mikerivera33/aurevon-labs/pull/69) — Buffer media `HEAD` support on `/api/post-visual`
+- [aurevon-labs#70](https://github.com/mikerivera33/aurevon-labs/pull/70) — Runbook and smoke helpers
+- [aurevon-labs#71](https://github.com/mikerivera33/aurevon-labs/pull/71) — `HEAD` preflight and public-URL guard in forge-crew
+- [aurevon-labs#72](https://github.com/mikerivera33/aurevon-labs/pull/72) — 1080p HD landscape informative visuals
