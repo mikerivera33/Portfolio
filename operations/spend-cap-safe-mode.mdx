@@ -108,13 +108,13 @@ Originals continue to publish through the Buffer peak queue in both modes.
 
 ## OAuth env-var naming
 
-Operators need both OAuth1 (for signed v1.1 endpoints and media upload) and OAuth2 (for `tweet.write` on the @AurevonLabs user) when Mode A is active. Wire these env vars exactly as named — several tools resolve them by name and will not fall back:
+Operators need both OAuth1 and OAuth2 credentials when Mode A is active. OAuth1 signs v1.1 endpoints, media upload, and the Articles API publish path. OAuth2 provides `tweet.write` on the @AurevonLabs user for reply writes. Wire these env vars exactly as named — several tools resolve them by name and will not fall back:
 
 ```bash
 # App bearer — timeline / user lookup
 X_BEARER_TOKEN=
 
-# OAuth 1.0a app consumer (API key/secret) — signed v1.1 + media upload
+# OAuth 1.0a app consumer (API key/secret) — signed v1.1, media upload, Articles API
 X_API_KEY=
 X_API_SECRET=
 
@@ -135,7 +135,8 @@ X_OAUTH2_REFRESH_TOKEN=
 Notes:
 
 - `TWITTER_ACCESS_TOKEN` and `TWITTER_ACCESS_TOKEN_SECRET` are accepted as aliases for the OAuth1 user token pair, but new setups should prefer the `X_ACCESS_TOKEN*` names for consistency.
-- Mode B does not need the OAuth2 user token or the Articles API credentials. It only needs `BUFFER_ACCESS_TOKEN` for the Buffer publish path.
+- The Articles API publisher signs requests with the OAuth1 user token pair (`X_ACCESS_TOKEN` / `X_ACCESS_TOKEN_SECRET`). Reply writes still need the OAuth2 user token.
+- Mode B does not use the X API at all. It only needs `BUFFER_ACCESS_TOKEN` for the Buffer publish path.
 - Never commit `.env` files. Rotate `X_USER_ACCESS_TOKEN` and `X_OAUTH2_REFRESH_TOKEN` if they leak.
 
 ## Runbook: spend-cap 403 response
