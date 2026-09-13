@@ -1,0 +1,165 @@
+---
+title: "Spend-cap safe mode"
+description: "Flip the forge-crew between full X publishing (Mode A) and Buffer-only spend-cap safe (Mode B) with one command."
+---
+
+Spend-cap safe mode is a single operator toggle that decides whether the AurevonLabs forge-crew is allowed to spend against the X developer API. Flip it when the monthly spend cap trips so autonomous publishing stays on through Buffer instead of going dark.
+
+## When to use it
+
+Switch to **Mode B (spend-cap safe)** when any of the following happen:
+
+- `POST /2/articles/draft` or another X write returns `403 spend-cap-reached`.
+- The X developer console shows the monthly spend cap has been hit for the project.
+- You want to zero X developer API spend for a scheduled window without pausing content.
+
+Return to **Mode A (full)** once the cap resets or a paid tier restores headroom.
+
+The toggle is durable and shared: Cloud Agent, local runs, and the eve orchestrator all read the same source of truth, so one flip covers the whole crew.
+
+## Mode A vs Mode B
+
+| Surface | Mode A — `full` | Mode B — `spend_cap_safe` |
+| --- | --- | --- |
+| Intent | Current full workflow | Zero X developer API spend |
+| Radar detect (timeline / user lookup) | On, via project bearer | Skipped — no X read scan |
+| Reply discovery | Watchlist scan | Non-X sources, URL-fed, or held drafts |
+| Reply publish path | X user OAuth writes | Buffer quote-retweet |
+| Originals publish path | Buffer peak queue | Buffer peak queue (unchanged) |
+| Articles publish path | X Articles API and/or Buffer/site | Buffer/site only — Articles API refused |
+| Fingerprint dedupe | On (list-before-create) | On |
+| Instant Share / `shareNow` | Never | Never |
+
+The `shareNow: false` invariant is enforced in both modes. Publishing never uses Buffer's Instant Share path; replies go through `addToQueue` or draft, and originals go through the peak queue. If you see a call that would set `shareNow: true`, treat it as a bug and do not merge it.
+
+## Flip the toggle
+
+Run the CLI from the `forge-crew` package root. It writes the durable config and prints a JSON summary.
+
+```bash
+# Check current mode (safe to run any time)
+node forge-crew/scripts/set-spend-mode.mjs status
+
+# Switch to Mode B — spend-cap safe (Buffer-only)
+node forge-crew/scripts/set-spend-mode.mjs safe
+
+# Switch back to Mode A — full
+node forge-crew/scripts/set-spend-mode.mjs full
+```
+
+Aliases the CLI accepts:
+
+- `safe` / `spend_cap_safe` / `spend-safe` / `b` / `mode_b` → Mode B
+- `full` / `a` / `mode_a` → Mode A
+- `status` / `get` / `show` → print current mode without changing it
+- `set <mode>` → explicit form, e.g. `set full`
+
+A successful `status` call looks like this:
+
+```json
+{
+  "mode": "spend_cap_safe",
+  "spendCapSafe": true,
+  "label": "Mode B — spend-cap safe",
+  "runNote": "X API disabled; Buffer-only",
+  "paths": {
+    "replies": "buffer_quote_rt",
+    "originals": "buffer_peak",
+    "articles": "buffer_or_site"
+  },
+  "xApi": {
+    "radarRead": false,
+    "oauthWrite": false,
+    "articlesApi": false
+  },
+  "sourceHint": "config/spend-mode.json"
+}
+```
+
+When Mode B is active, the CLI also prints:
+
+```
+RUN NOTE: X API disabled; Buffer-only
+```
+
+Use that string verbatim in run notes and incident updates so the operating mode is unambiguous.
+
+## Resolution order
+
+The forge-crew resolves the effective mode in this order. The first source that returns a valid value wins:
+
+1. `FORGE_SPEND_MODE` env (`full` or `spend_cap_safe`).
+2. `X_SPEND_CAP_SAFE=true` env (forces Mode B).
+3. The durable config file written by the CLI.
+4. Default: `full`.
+
+Env vars override the file for the current process, so a container or CI job can force Mode B without touching the shared config. In shells where env is not set, the CLI's `status` `sourceHint` tells you which source is currently authoritative.
+
+## What Mode B blocks
+
+In Mode B, the central gate refuses X developer API calls and reroutes autonomous publishing to Buffer:
+
+- Radar timeline scans (`scan_watchlist` in `x-radar` and `x-radar-promo`) return an empty `newPosts` batch with the `X API disabled; Buffer-only` run note.
+- `post_x_reply` and `post_organic_reply` refuse X OAuth writes and publish via Buffer quote-retweet instead.
+- The X Articles API publisher exits with a non-zero status; articles must go through Buffer or the site.
+- `check-autopost-ready` reports the current mode and marks reply and radar paths as Buffer-armed.
+
+Originals continue to publish through the Buffer peak queue in both modes.
+
+## OAuth env-var naming
+
+Operators need both OAuth1 and OAuth2 credentials when Mode A is active. OAuth1 signs v1.1 endpoints, media upload, and the Articles API publish path. OAuth2 provides `tweet.write` on the @AurevonLabs user for reply writes. Wire these env vars exactly as named — several tools resolve them by name and will not fall back:
+
+```bash
+# App bearer — timeline / user lookup
+X_BEARER_TOKEN=
+
+# OAuth 1.0a app consumer (API key/secret) — signed v1.1, media upload, Articles API
+X_API_KEY=
+X_API_SECRET=
+
+# OAuth 1.0a user access token/secret for @AurevonLabs
+X_ACCESS_TOKEN=
+X_ACCESS_TOKEN_SECRET=
+
+# OAuth 2.0 app (confidential client) — refreshes user tokens
+X_OAUTH2_CLIENT_ID=
+X_OAUTH2_CLIENT_SECRET=
+
+# OAuth 2.0 user access token for @AurevonLabs (tweet.write scope)
+X_USER_ACCESS_TOKEN=
+# offline.access refresh token — used to refresh on 401
+X_OAUTH2_REFRESH_TOKEN=
+```
+
+Notes:
+
+- `TWITTER_ACCESS_TOKEN` and `TWITTER_ACCESS_TOKEN_SECRET` are accepted as aliases for the OAuth1 user token pair, but new setups should prefer the `X_ACCESS_TOKEN*` names for consistency.
+- The Articles API publisher signs requests with the OAuth1 user token pair (`X_ACCESS_TOKEN` / `X_ACCESS_TOKEN_SECRET`). Reply writes still need the OAuth2 user token.
+- Mode B does not use the X API at all. It only needs `BUFFER_ACCESS_TOKEN` for the Buffer publish path.
+- Never commit `.env` files. Rotate `X_USER_ACCESS_TOKEN` and `X_OAUTH2_REFRESH_TOKEN` if they leak.
+
+## Runbook: spend-cap 403 response
+
+1. Confirm the failure. Rerun the failing script or check the last publish log for `403 spend-cap-reached`.
+2. Flip the crew to Mode B:
+
+   ```bash
+   node forge-crew/scripts/set-spend-mode.mjs safe
+   ```
+
+3. Verify the switch:
+
+   ```bash
+   node forge-crew/scripts/set-spend-mode.mjs status
+   ```
+
+   Expect `"mode": "spend_cap_safe"` and the `X API disabled; Buffer-only` run note.
+4. Record the incident. Use the run note verbatim so downstream logs are greppable.
+5. When the cap resets or a paid tier is provisioned, flip back:
+
+   ```bash
+   node forge-crew/scripts/set-spend-mode.mjs full
+   ```
+
+6. Re-run `status` to confirm `mode: full` and that `xApi.oauthWrite` and `xApi.articlesApi` are `true` again.
